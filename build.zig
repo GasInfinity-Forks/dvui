@@ -63,6 +63,13 @@ pub fn build(b: *std.Build) !void {
         b.option(bool, "log-error-trace", "If error logs should include the error return trace (automatically enabled with log stack traces)"),
     );
 
+    const libc = b.option(bool, "libc", "Build with libc") orelse true;
+    const freetype = b.option(bool, "freetype", "Use freetype instead of stb_truetype") orelse libc;
+    build_options.addOption(bool, "has_freetype", freetype);
+
+    const tinyfiledialogs = b.option(bool, "tinyfiledialogs", "Build with tinyfiledialogs support") orelse libc;
+    build_options.addOption(bool, "has_tinyfiledialogs", tinyfiledialogs);
+
     const accesskit = b.option(AccesskitOptions, "accesskit", "Build with AccessKit support") orelse .off;
 
     build_options.addOption(
@@ -71,7 +78,7 @@ pub fn build(b: *std.Build) !void {
         accesskit,
     );
 
-    var dvui_opts = DvuiModuleOptions{
+    var dvui_opts: DvuiModuleOptions = .{
         .b = b,
         .target = target,
         .optimize = optimize,
@@ -80,6 +87,9 @@ pub fn build(b: *std.Build) !void {
         .check_step = check_step,
         .use_lld = use_lld,
         .accesskit = accesskit,
+        .libc = libc,
+        .freetype = freetype,
+        .tinyfiledialogs = tinyfiledialogs,
         .build_options = build_options,
     };
 
@@ -479,7 +489,7 @@ pub fn buildBackend(backend: enums_backend.Backend, test_dvui_and_app: bool, dvu
 
             // Examples, must be compiled for wasm32
             {
-                const wasm_dvui_opts = DvuiModuleOptions{
+                const wasm_dvui_opts: DvuiModuleOptions = .{
                     .b = b,
                     .target = b.resolveTargetQuery(.{
                         .cpu_arch = .wasm32,
@@ -489,6 +499,9 @@ pub fn buildBackend(backend: enums_backend.Backend, test_dvui_and_app: bool, dvu
                     .build_options = dvui_opts.build_options,
                     .test_filters = dvui_opts.test_filters,
                     .accesskit = .off,
+                    .libc = false,
+                    .freetype = false,
+                    .tinyfiledialogs = false,
                     // no tests or checks needed, they are check above in native build
                 };
 
@@ -526,6 +539,9 @@ const DvuiModuleOptions = struct {
     add_stb_image: bool = true,
     use_lld: ?bool = null,
     accesskit: AccesskitOptions = .off,
+    libc: bool,
+    freetype: bool,
+    tinyfiledialogs: bool,
     build_options: *std.Build.Step.Options,
 
     fn addChecks(self: *const @This(), mod: *std.Build.Module, name: []const u8) void {
@@ -604,6 +620,7 @@ fn addDvuiModule(
         .root_source_file = b.path("src/dvui.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = opts.libc,
     });
     dvui_mod.addOptions("build_options", opts.build_options);
     dvui_mod.addImport("svg2tvg", b.dependency("svg2tvg", .{
@@ -637,27 +654,29 @@ fn addDvuiModule(
     const stb_source = "vendor/stb/";
     dvui_mod.addIncludePath(b.path(stb_source));
 
-    if (target.result.cpu.arch == .wasm32 or target.result.cpu.arch == .wasm64) {
+    const stb_flags: []const []const u8 = if(!opts.libc)
+        &.{ "-DINCLUDE_CUSTOM_LIBC_FUNCS=1", "-DSTBI_NO_STDLIB=1", "-DSTBIW_NO_STDLIB=1" }
+    else
+        &.{};
+
+    dvui_mod.addCSourceFiles(.{
+        .files = &.{
+            stb_source ++ "stb_truetype_impl.c",
+        },
+        .flags = stb_flags,
+    });
+
+    if(opts.add_stb_image) {
         dvui_mod.addCSourceFiles(.{
             .files = &.{
                 stb_source ++ "stb_image_impl.c",
                 stb_source ++ "stb_image_write_impl.c",
-                stb_source ++ "stb_truetype_impl.c",
             },
-            .flags = &.{ "-DINCLUDE_CUSTOM_LIBC_FUNCS=1", "-DSTBI_NO_STDLIB=1", "-DSTBIW_NO_STDLIB=1" },
+            .flags = stb_flags,
         });
-    } else {
-        if (opts.add_stb_image) {
-            dvui_mod.addCSourceFiles(.{ .files = &.{
-                stb_source ++ "stb_image_impl.c",
-                stb_source ++ "stb_image_write_impl.c",
-            } });
-        }
-        dvui_mod.addCSourceFiles(.{ .files = &.{stb_source ++ "stb_truetype_impl.c"} });
-
-        dvui_mod.addIncludePath(b.path("vendor/tfd"));
-        dvui_mod.addCSourceFiles(.{ .files = &.{"vendor/tfd/tinyfiledialogs.c"} });
-
+    }
+    
+    if(opts.freetype) {
         if (b.systemIntegrationOption("freetype", .{})) {
             dvui_mod.linkSystemLibrary("freetype2", .{});
         } else {
@@ -669,6 +688,11 @@ fn addDvuiModule(
                 dvui_mod.linkLibrary(fd.artifact("freetype"));
             }
         }
+    }
+
+    if(opts.tinyfiledialogs) {
+        dvui_mod.addIncludePath(b.path("vendor/tfd"));
+        dvui_mod.addCSourceFiles(.{ .files = &.{"vendor/tfd/tinyfiledialogs.c"} });
     }
 
     return dvui_mod;

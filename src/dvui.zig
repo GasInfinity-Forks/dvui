@@ -248,7 +248,7 @@ pub const dialogNativeFileSave = native_dialogs.Native.save;
 pub const dialogNativeFolderSelect = native_dialogs.Native.folderSelect;
 
 pub const wasm = (builtin.target.cpu.arch == .wasm32 or builtin.target.cpu.arch == .wasm64);
-pub const useFreeType = !wasm;
+pub const useFreeType = @import("build_options").has_freetype;
 
 /// The amount of physical pixels to scroll per "tick" of the scroll wheel
 pub var scroll_speed: f32 = 20;
@@ -284,16 +284,17 @@ pub const c = @cImport({
         @cInclude("stb_truetype.h");
     }
 
-    if (wasm) {
+    if (!builtin.link_libc) {
         @cDefine("STBI_NO_STDIO", "1");
         @cDefine("STBI_NO_STDLIB", "1");
         @cDefine("STBIW_NO_STDLIB", "1");
     }
+
     @cInclude("stb_image.h");
     @cInclude("stb_image_write.h");
 
     // Used by native dialogs
-    if (!wasm) {
+    if (@import("build_options").has_tinyfiledialogs) {
         @cInclude("tinyfiledialogs.h");
     }
 });
